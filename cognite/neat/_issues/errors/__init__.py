@@ -1,8 +1,9 @@
-from cognite.neat._issues._base import DefaultPydanticError, NeatError, RowError, _get_subclasses
+from cognite.neat._issues._base import NeatError, _get_subclasses
 
 from ._external import (
     AuthorizationError,
     CDFMissingClientError,
+    CDFMissingResourcesError,
     FileMissingRequiredFieldError,
     FileNotAFileError,
     FileNotFoundNeatError,
@@ -31,12 +32,24 @@ from ._resources import (
     ResourceNotFoundError,
     ResourceRetrievalError,
 )
-from ._wrapper import MetadataValueError
+from ._wrapper import (
+    ClassValueError,
+    ContainerValueError,
+    EnumValueError,
+    MetadataValueError,
+    NodeValueError,
+    PropertyValueError,
+    SpreadsheetError,
+    ViewValueError,
+)
 
 __all__ = [
     "AuthorizationError",
     "CDFMissingClientError",
-    "DefaultPydanticError",
+    "CDFMissingResourcesError",
+    "ClassValueError",
+    "ContainerValueError",
+    "EnumValueError",
     "FileMissingRequiredFieldError",
     "FileNotAFileError",
     "FileNotFoundNeatError",
@@ -48,12 +61,14 @@ __all__ = [
     "NeatTypeError",
     "NeatValueError",
     "NeatYamlError",
+    "NodeValueError",
     "OxigraphStorageLockedError",
     "PropertyDefinitionDuplicatedError",
     "PropertyDefinitionError",
     "PropertyMappingDuplicatedError",
     "PropertyNotFoundError",
     "PropertyTypeNotSupportedError",
+    "PropertyValueError",
     "RegexViolationError",
     "ResourceChangedError",
     "ResourceConversionError",
@@ -65,7 +80,8 @@ __all__ = [
     "ResourceNotFoundError",
     "ResourceRetrievalError",
     "ReversedConnectionNotFeasibleError",
-    "RowError",
+    "SpreadsheetError",
+    "ViewValueError",
 ]
 
 _NEAT_ERRORS_BY_NAME = {error.__name__: error for error in _get_subclasses(NeatError, include_base=True)}

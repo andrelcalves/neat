@@ -2,13 +2,12 @@ from functools import lru_cache
 from pathlib import Path
 
 from cognite.client import data_modeling as dm
-from rdflib import RDF
+from rdflib import RDF, Namespace
 from rdflib.term import Literal
 
-from cognite.neat._client.data_classes.data_modeling import ContainerApplyDict, NodeApplyDict, ViewApplyDict
-from cognite.neat._client.data_classes.schema import DMSSchema
-from cognite.neat._constants import DEFAULT_NAMESPACE
+from cognite.neat._constants import DEFAULT_SPACE_URI
 from cognite.neat._rules import importers
+from cognite.neat._rules.importers._spreadsheet2rules import ExcelImporter
 from cognite.neat._rules.models import DMSRules, InformationRules
 from cognite.neat._rules.models.dms import (
     DMSInputContainer,
@@ -18,36 +17,33 @@ from cognite.neat._rules.models.dms import (
     DMSInputView,
 )
 from cognite.neat._rules.transformers import VerifyInformationRules
+from tests.data import DATA_DIR
 
 INSTANCE_SPACE = "sp_cars"
-_neat = DEFAULT_NAMESPACE
+MODEL_SPACE = "sp_example_car"
+_instance_ns = Namespace(DEFAULT_SPACE_URI.format(space=INSTANCE_SPACE))
+_model_ns = Namespace(DEFAULT_SPACE_URI.format(space=MODEL_SPACE))
 TRIPLES = tuple(
     [
-        (_neat["Toyota"], RDF.type, _neat["Manufacturer"]),
-        (_neat["Toyota"], _neat["name"], Literal("Toyota")),
-        (_neat["Toyota"], _neat["space"], Literal(INSTANCE_SPACE)),
-        (_neat["Blue"], RDF.type, _neat["Color"]),
-        (_neat["Blue"], _neat["name"], Literal("blue")),
-        (_neat["Blue"], _neat["space"], Literal(INSTANCE_SPACE)),
-        (_neat["Car1"], RDF.type, _neat["Car"]),
-        (_neat["Car1"], _neat["Car.Manufacturer"], _neat["Toyota"]),
-        (_neat["Car1"], _neat["year"], Literal(2020)),
-        (_neat["Car1"], _neat["color"], _neat["Blue"]),
-        (_neat["Car1"], _neat["space"], Literal(INSTANCE_SPACE)),
-        (_neat["Ford"], RDF.type, _neat["Manufacturer"]),
-        (_neat["Ford"], _neat["name"], Literal("Ford")),
-        (_neat["Ford"], _neat["space"], Literal(INSTANCE_SPACE)),
-        (_neat["Red"], RDF.type, _neat["Color"]),
-        (_neat["Red"], _neat["name"], Literal("red")),
-        (_neat["Red"], _neat["space"], Literal(INSTANCE_SPACE)),
-        (_neat["Car2"], RDF.type, _neat["Car"]),
-        (_neat["Car2"], _neat["Car.Manufacturer"], _neat["Ford"]),
-        (_neat["Car2"], _neat["year"], Literal(2018)),
-        (_neat["Car2"], _neat["color"], _neat["Red"]),
-        (_neat["Car2"], _neat["space"], Literal(INSTANCE_SPACE)),
+        (_instance_ns["Toyota"], RDF.type, _model_ns["Manufacturer"]),
+        (_instance_ns["Toyota"], _model_ns["name"], Literal("Toyota")),
+        (_instance_ns["Blue"], RDF.type, _model_ns["Color"]),
+        (_instance_ns["Blue"], _model_ns["name"], Literal("blue")),
+        (_instance_ns["Car1"], RDF.type, _model_ns["Car"]),
+        (_instance_ns["Car1"], _model_ns["Car.Manufacturer"], _instance_ns["Toyota"]),
+        (_instance_ns["Car1"], _model_ns["year"], Literal(2020)),
+        (_instance_ns["Car1"], _model_ns["color"], _instance_ns["Blue"]),
+        (_instance_ns["Ford"], RDF.type, _model_ns["Manufacturer"]),
+        (_instance_ns["Ford"], _model_ns["name"], Literal("Ford")),
+        (_instance_ns["Red"], RDF.type, _model_ns["Color"]),
+        (_instance_ns["Red"], _model_ns["name"], Literal("red")),
+        (_instance_ns["Car2"], RDF.type, _model_ns["Car"]),
+        (_instance_ns["Car2"], _model_ns["Car.Manufacturer"], _instance_ns["Ford"]),
+        (_instance_ns["Car2"], _model_ns["year"], Literal(2018)),
+        (_instance_ns["Car2"], _model_ns["color"], _instance_ns["Red"]),
     ]
 )
-MODEL_SPACE = "sp_example_car"
+
 CONTAINERS = dm.ContainerApplyList(
     [
         dm.ContainerApply(
@@ -274,12 +270,5 @@ INSTANCES = [
 
 
 @lru_cache(maxsize=1)
-def get_car_schema() -> DMSSchema:
-    model = CAR_MODEL.as_write()
-    model.views = [view.as_id() for view in model.views]
-    return DMSSchema(
-        data_model=model,
-        containers=ContainerApplyDict(CONTAINERS),
-        views=ViewApplyDict([view.as_write() for view in CAR_MODEL.views]),
-        node_types=NodeApplyDict(NODE_TYPES),
-    )
+def get_car_dms_rules() -> DMSRules:
+    return ExcelImporter(DATA_DIR / "car_dms_rules.xlsx").to_rules().rules.as_verified_rules()

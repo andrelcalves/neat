@@ -2,17 +2,22 @@ import warnings
 import zipfile
 from collections.abc import Collection
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, Literal, cast, overload
 
 from cognite.client import data_modeling as dm
+from cognite.client.data_classes.data_modeling import DataModelIdentifier
 
 from cognite.neat._alpha import AlphaFlags
+from cognite.neat._client._api_client import NeatClient
 from cognite.neat._constants import COGNITE_MODELS
 from cognite.neat._graph import loaders
+from cognite.neat._issues import IssueList, NeatIssue, catch_issues
 from cognite.neat._rules import exporters
 from cognite.neat._rules._constants import PATTERNS
 from cognite.neat._rules._shared import VerifiedRules
 from cognite.neat._rules.exporters._rules2dms import Component
+from cognite.neat._rules.importers import DMSImporter
+from cognite.neat._rules.models import DMSRules, InformationRules
 from cognite.neat._rules.models.dms import DMSMetadata
 from cognite.neat._utils.upload import UploadResultList
 
@@ -31,14 +36,40 @@ class ToAPI:
         self._state = state
         self._verbose = verbose
         self.cdf = CDFToAPI(state, verbose)
+        self._python = ToPythonAPI(state, verbose)
+
+    def ontology(self, io: Any) -> None:
+        """Export the data model to ontology.
+
+        Args:
+            io: The file path to file-like object to write the session to.
+
+        Example:
+            Export the session to a file
+            ```python
+            ontology_file_name = "neat_session.ttl"
+            neat.to.ontology(ontology_file_name)
+            ```
+        """
+        warnings.filterwarnings("default")
+        AlphaFlags.to_ontology.warn()
+
+        filepath = Path(io)
+        if filepath.suffix != ".ttl":
+            warnings.warn("File extension is not .ttl, adding it to the file name", stacklevel=2)
+            filepath = filepath.with_suffix(".ttl")
+
+        exporter = exporters.OWLExporter()
+        self._state.rule_store.export_to_file(exporter, Path(io))
+        return None
 
     def excel(
         self,
         io: Any,
-        include_reference: bool = True,
+        include_reference: bool | DataModelIdentifier = True,
         include_properties: Literal["same-space", "all"] = "all",
         add_empty_rows: bool = False,
-    ) -> None:
+    ) -> IssueList | None:
         """Export the verified data model to Excel.
 
         Args:
@@ -46,6 +77,7 @@ class ToAPI:
             include_reference: If True, the reference data model will be included. Defaults to True.
                 Note that this only applies if you have created the data model using the
                 create.enterprise_model(...), create.solution_model(), or create.data_product_model() methods.
+                You can also provide a DataModelIdentifier directly, which will be read from CDF
             include_properties: The properties to include in the Excel file. Defaults to "all".
                 - "same-space": Only properties that are in the same space as the data model will be included.
             add_empty_rows: If True, empty rows will be added between each component. Defaults to False.
@@ -71,19 +103,45 @@ class ToAPI:
             dms_rules_file_name = "dms_rules.xlsx"
             neat.to.excel(dms_rules_file_name, include_reference=True)
             ```
+
+        Example:
+            Read the data model ("my_space", "ISA95Model", "v5") and export it to an excel file with the
+            CogniteCore model in the reference sheets.
+            ```python
+            client = CogniteClient()
+            neat = NeatSession(client)
+
+            neat.read.cdf(("my_space", "ISA95Model", "v5"))
+            dms_rules_file_name = "dms_rules.xlsx"
+            neat.to.excel(dms_rules_file_name, include_reference=("cdf_cdm", "CogniteCore", "v1"))
         """
         reference_rules_with_prefix: tuple[VerifiedRules, str] | None = None
         include_properties = include_properties.strip().lower()
 
-        if include_reference and self._state.last_reference:
-            if (
-                isinstance(self._state.last_reference.metadata, DMSMetadata)
-                and self._state.last_reference.metadata.as_data_model_id() in COGNITE_MODELS
-            ):
-                prefix = "CDM"
+        if include_reference is not False:
+            if include_reference is True and self._state.last_reference is not None:
+                ref_rules: InformationRules | DMSRules | None = self._state.last_reference
+            elif include_reference is True:
+                ref_rules = None
             else:
+                if not self._state.client:
+                    raise NeatSessionError("No client provided!")
+                ref_rules = None
+                with catch_issues() as issues:
+                    ref_read = DMSImporter.from_data_model_id(self._state.client, include_reference).to_rules()
+                    if ref_read.rules is not None:
+                        ref_rules = ref_read.rules.as_verified_rules()
+                if ref_rules is None or issues.has_errors:
+                    issues.action = f"Read {include_reference}"
+                    return issues
+            if ref_rules is not None:
                 prefix = "Ref"
-            reference_rules_with_prefix = self._state.last_reference, prefix
+                if (
+                    isinstance(ref_rules.metadata, DMSMetadata)
+                    and ref_rules.metadata.as_data_model_id() in COGNITE_MODELS
+                ):
+                    prefix = "CDM"
+                reference_rules_with_prefix = ref_rules, prefix
 
         if include_properties == "same-space":
             warnings.filterwarnings("default")
@@ -95,7 +153,8 @@ class ToAPI:
             add_empty_rows=add_empty_rows,
             include_properties=include_properties,  # type: ignore
         )
-        return self._state.rule_store.export_to_file(exporter, Path(io))
+        self._state.rule_store.export_to_file(exporter, Path(io))
+        return None
 
     def session(self, io: Any) -> None:
         """Export the current session to a file.
@@ -177,6 +236,7 @@ class ToAPI:
             neat.to.yaml(your_folder_name, format="toolkit")
             ```
         """
+
         if format == "neat":
             exporter = exporters.YAMLExporter()
             if io is None:
@@ -212,35 +272,70 @@ class CDFToAPI:
     def instances(
         self,
         space: str | None = None,
+        space_property: str | None = None,
     ) -> UploadResultList:
         """Export the verified DMS instances to CDF.
 
         Args:
             space: Name of instance space to use. Default is to suffix the schema space with '_instances'.
-            Note this space is required to be different than the space with the data model.
+                Note this space is required to be different from the space with the data model.
+            space_property: This is an alternative to the 'space' argument. If provided, the space will set to the
+                value of the property with the given name for each instance. If the property is not found, the
+                'space' argument will be used. Defaults to None.
+
+        Returns:
+            UploadResultList: The result of the upload.
+
+        Example:
+            Export instances to CDF
+            ```python
+            neat.to.cdf.instances()
+            ```
+
+            Export instances to CDF using the `dataSetId` property as the space
+            ```python
+            neat.to.cdf.instances(space_property="dataSetId")
+            ```
 
         """
-        if not self._state.client:
-            raise NeatSessionError("No CDF client provided!")
-        client = self._state.client
-        space = space or f"{self._state.rule_store.last_verified_dms_rules.metadata.space}_instances"
+        return self._instances(instance_space=space, space_from_property=space_property)
 
-        if space and space == self._state.rule_store.last_verified_dms_rules.metadata.space:
+    def _instances(
+        self,
+        instance_space: str | None = None,
+        space_from_property: str | None = None,
+        use_source_space: bool = False,
+    ) -> UploadResultList:
+        self._state._raise_exception_if_condition_not_met(
+            "Export DMS instances to CDF",
+            client_required=True,
+        )
+
+        client = cast(NeatClient, self._state.client)
+        dms_rules = self._state.rule_store.last_verified_dms_rules
+        instance_space = instance_space or f"{dms_rules.metadata.space}_instances"
+
+        if instance_space and instance_space == dms_rules.metadata.space:
             raise NeatSessionError("Space for instances must be different from the data model space.")
-        elif not PATTERNS.space_compliance.match(str(space)):
+        elif not PATTERNS.space_compliance.match(str(instance_space)):
             raise NeatSessionError("Please provide a valid space name. {PATTERNS.space_compliance.pattern}")
 
-        if not client.data_modeling.spaces.retrieve(space):
-            client.data_modeling.spaces.apply(dm.SpaceApply(space=space))
+        if not client.data_modeling.spaces.retrieve(instance_space):
+            client.data_modeling.spaces.apply(dm.SpaceApply(space=instance_space))
 
-        loader = loaders.DMSLoader.from_rules(
+        loader = loaders.DMSLoader(
             self._state.rule_store.last_verified_dms_rules,
+            self._state.rule_store.last_verified_information_rules,
             self._state.instances.store,
-            instance_space=space,
+            instance_space=instance_space,
             client=client,
+            space_property=space_from_property,
+            use_source_space=use_source_space,
             # In case urllib.parse.quote() was run on the extraction, we need to run
             # urllib.parse.unquote() on the load.
-            unquote_external_ids=self._state.quoted_source_identifiers,
+            unquote_external_ids=True,
+            neat_prefix_by_predicate_uri=self._state.instances.neat_prefix_by_predicate_uri,
+            neat_prefix_by_type_uri=self._state.instances.neat_prefix_by_type_uri,
         )
 
         result = loader.load_into_cdf(client)
@@ -269,17 +364,88 @@ class CDFToAPI:
         !!! note "Data Model creation modes"
             - "fail": If any component already exists, the export will fail.
             - "skip": If any component already exists, it will be skipped.
-            - "update": If any component already exists, it will be updated.
+            - "update": If any component already exists, it will be updated. For data models, views, and containers
+                this means combining the existing and new component. Fo example, for data models the new
+                views will be added to the existing views.
             - "force": If any component already exists, and the update fails, it will be deleted and recreated.
             - "recreate": All components will be deleted and recreated. The exception is spaces, which will be updated.
 
         """
 
+        self._state._raise_exception_if_condition_not_met(
+            "Export DMS data model to CDF",
+            client_required=True,
+        )
+
         exporter = exporters.DMSExporter(existing=existing, export_components=components, drop_data=drop_data)
 
-        if not self._state.client:
-            raise NeatSessionError("No client provided!")
-
-        result = self._state.rule_store.export_to_cdf(exporter, self._state.client, dry_run)
+        result = self._state.rule_store.export_to_cdf(exporter, cast(NeatClient, self._state.client), dry_run)
         print("You can inspect the details with the .inspect.outcome.data_model(...) method.")
         return result
+
+
+@session_class_wrapper
+class ToPythonAPI:
+    """API used to write the contents of a NeatSession to Python objects"""
+
+    def __init__(self, state: SessionState, verbose: bool) -> None:
+        self._state = state
+        self._verbose = verbose
+
+    def instances(
+        self,
+        instance_space: str | None = None,
+        space_from_property: str | None = None,
+        use_source_space: bool = False,
+    ) -> tuple[list[dm.InstanceApply], IssueList]:
+        """Export the verified DMS instances to Python objects.
+
+        Args:
+            instance_space: The name of the instance space to use. Defaults to None.
+            space_from_property: This is an alternative to the 'instance_space' argument. If provided,
+                the space will be set to the value of the property with the given name for each instance.
+                If the property is not found, the 'instance_space' argument will be used. Defaults to None.
+            use_source_space: If True, the instance space will be set to the source space of the instance.
+                This is only relevant if the instances were extracted from CDF data models. Defaults to False.
+
+        Returns:
+            list[dm.InstanceApply]: The instances as Python objects.
+
+        Example:
+            Export instances to Python objects
+            ```python
+            instances = neat.to._python.instances()
+            ```
+
+            Export instances to Python objects using the `dataSetId` property as the space
+            ```python
+            instances = neat.to._python.instances(space_from_property="dataSetId")
+            ```
+        """
+        dms_rules = self._state.rule_store.last_verified_dms_rules
+        instance_space = instance_space or f"{dms_rules.metadata.space}_instances"
+
+        if instance_space and instance_space == dms_rules.metadata.space:
+            raise NeatSessionError("Space for instances must be different from the data model space.")
+        elif not PATTERNS.space_compliance.match(str(instance_space)):
+            raise NeatSessionError(f"Please provide a valid space name. {PATTERNS.space_compliance.pattern}")
+
+        loader = loaders.DMSLoader(
+            self._state.rule_store.last_verified_dms_rules,
+            self._state.rule_store.last_verified_information_rules,
+            self._state.instances.store,
+            instance_space=instance_space,
+            space_property=space_from_property,
+            use_source_space=use_source_space,
+            unquote_external_ids=True,
+            neat_prefix_by_predicate_uri=self._state.instances.neat_prefix_by_predicate_uri,
+            neat_prefix_by_type_uri=self._state.instances.neat_prefix_by_type_uri,
+        )
+        issue_list = IssueList()
+        instances: list[dm.InstanceApply] = []
+        for item in loader.load(stop_on_exception=False):
+            if isinstance(item, dm.InstanceApply):
+                instances.append(item)
+            elif isinstance(item, NeatIssue):
+                issue_list.append(item)
+        return instances, issue_list

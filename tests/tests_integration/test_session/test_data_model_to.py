@@ -1,7 +1,10 @@
+import datetime
 from pathlib import Path
 
 import pytest
+import yaml
 from cognite.client import data_modeling as dm
+from pytest_regressions.data_regression import DataRegressionFixture
 
 from cognite.neat import NeatSession
 from cognite.neat._client import NeatClient
@@ -47,10 +50,7 @@ class TestDataModelToCDF:
     def test_to_cdf_recreate(self, neat_client: NeatClient) -> None:
         car_model = create_new_car_model(neat_client, "test_to_cdf_recreate", "test_to_cdf_recreate_data")
         neat = NeatSession(neat_client)
-
         neat.read.cdf.data_model(car_model)
-
-        neat.verify()
 
         result = neat.to.cdf.data_model(existing="recreate", drop_data=False)
         result_by_name = {r.name: r for r in result}
@@ -91,8 +91,9 @@ class TestDataModelToCDF:
 class TestRulesStoreProvenanceSyncing:
     def test_detached_provenance(self, tmp_path: Path) -> None:
         neat = NeatSession()
-        neat.read.rdf.examples.nordic44()
+        neat.read.examples.nordic44()
         neat.infer()
+        neat.show.data_model()
         neat.to.excel(tmp_path / "nordic44.xlsx")
         neat.fix.data_model.cdf_compliant_external_ids()
 
@@ -110,7 +111,7 @@ class TestRulesStoreProvenanceSyncing:
 
     def test_unknown_source(self, neat_client: NeatClient) -> None:
         neat = NeatSession(neat_client)
-        neat.read.excel.examples.pump_example()
+        neat.read.examples.pump_example()
 
         with pytest.raises(NeatValueError) as e:
             neat._state.rule_import(
@@ -122,11 +123,11 @@ class TestRulesStoreProvenanceSyncing:
 
     def test_source_not_in_store(self, tmp_path: Path, neat_client: NeatClient) -> None:
         neat = NeatSession(neat_client)
-        neat.read.excel.examples.pump_example()
+        neat.read.examples.pump_example()
         neat.to.excel(tmp_path / "pump.xlsx")
 
         neat2 = NeatSession(neat_client)
-        neat2.read.rdf.examples.nordic44()
+        neat2.read.examples.nordic44()
         neat2.infer()
 
         with pytest.raises(NeatValueError) as e:
@@ -139,7 +140,7 @@ class TestRulesStoreProvenanceSyncing:
 
     def test_external_mod_allowed_provenance(self, tmp_path: Path) -> None:
         neat = NeatSession()
-        neat.read.rdf.examples.nordic44()
+        neat.read.examples.nordic44()
         neat.infer()
         neat.fix.data_model.cdf_compliant_external_ids()
         neat.to.excel(tmp_path / "nordic44.xlsx")
@@ -150,3 +151,28 @@ class TestRulesStoreProvenanceSyncing:
 
         assert len(neat._state.rule_store.provenance) == 3
         assert neat._state.rule_store.provenance[-1].description == "Manual transformation of rules outside of NEAT"
+
+    def test_raw_filter(self, neat_client: NeatClient, data_regression: DataRegressionFixture) -> None:
+        neat = NeatSession(neat_client)
+        neat.read.excel(DATA_DIR / "dm_raw_filter.xlsx")
+
+        rules = neat._state.rule_store.last_verified_dms_rules
+        rules.metadata.created = datetime.datetime.fromisoformat("2024-09-19T00:00:00Z")
+        rules.metadata.updated = datetime.datetime.fromisoformat("2024-09-19T00:00:00Z")
+        neat.to.cdf.data_model(existing="recreate")
+
+        neat = NeatSession(neat_client)
+        neat.read.cdf.data_model(("nikola_space", "nikola_external_id", "v1"))
+
+        rules = neat._state.rule_store.last_verified_dms_rules
+        rules.metadata.created = datetime.datetime.fromisoformat("2024-09-19T00:00:00Z")
+        rules.metadata.updated = datetime.datetime.fromisoformat("2024-09-19T00:00:00Z")
+
+        rules_str = neat.to.yaml(format="neat")
+        rules_dict = yaml.safe_load(rules_str)
+
+        data_regression.check(
+            {
+                "rules": rules_dict,
+            }
+        )

@@ -1,3 +1,4 @@
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -69,7 +70,9 @@ EXAMPLE_RULES = PACKAGE_DIRECTORY / "_rules" / "examples"
 EXAMPLE_GRAPHS = PACKAGE_DIRECTORY / "_graph" / "examples"
 EXAMPLE_WORKFLOWS = PACKAGE_DIRECTORY / "_workflows" / "examples"
 
-DEFAULT_SPACE_URI = "http://purl.org/cognite/{space}#"
+DEFAULT_SPACE_URI = "http://purl.org/cognite/space/{space}#"
+SPACE_URI_PATTERN = re.compile(r"http://purl.org/cognite/space/(?P<space>[^#]+)#$")
+DEFAULT_RAW_URI = "http://purl.org/cognite/raw#"
 DEFAULT_NAMESPACE = Namespace("http://purl.org/cognite/neat/")
 CDF_NAMESPACE = Namespace("https://cognitedata.com/")
 DEFAULT_BASE_URI = URIRef(DEFAULT_NAMESPACE)
@@ -164,9 +167,20 @@ READONLY_PROPERTIES_BY_CONTAINER: Mapping[dm.ContainerId, frozenset[str]] = {
     dm.ContainerId("cdf_cdm", "CogniteFile"): frozenset({"isUploaded", "uploadedTime"}),
 }
 
+HIERARCHICAL_PROPERTIES_BY_CONTAINER: Mapping[dm.ContainerId, frozenset[str]] = {
+    dm.ContainerId("cdf_cdm", "CogniteAsset"): frozenset({"assetHierarchy_parent"})
+}
+
 
 def is_readonly_property(container: dm.ContainerId, property_: str) -> bool:
     return container in READONLY_PROPERTIES_BY_CONTAINER and property_ in READONLY_PROPERTIES_BY_CONTAINER[container]
+
+
+def is_hierarchy_property(container: dm.ContainerId, property_: str) -> bool:
+    return (
+        container in HIERARCHICAL_PROPERTIES_BY_CONTAINER
+        and property_ in HIERARCHICAL_PROPERTIES_BY_CONTAINER[container]
+    )
 
 
 DMS_RESERVED_PROPERTIES = frozenset(

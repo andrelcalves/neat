@@ -117,6 +117,9 @@ SPLIT_ON_COMMA_PATTERN = re.compile(r",(?![^(]*\))")
 # This pattern ignores equal signs inside brackets
 SPLIT_ON_EQUAL_PATTERN = re.compile(r"=(?![^(]*\))")
 
+# Very special Edge Entity parsing
+SPLIT_ON_EDGE_ENTITY_ARGS_PATTERN = re.compile(r"(\btype\b|\bproperties\b|\bdirection\b)\s*=\s*([^,]+)")
+
 
 class _Patterns:
     @cached_property
@@ -185,3 +188,12 @@ class _Patterns:
 
 
 PATTERNS = _Patterns()
+
+
+def get_internal_properties() -> set[str]:
+    return {
+        "physical",
+        "logical",
+        "conceptual",
+        "Neat ID",
+    }

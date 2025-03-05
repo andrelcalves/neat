@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Literal, cast
 
+from rdflib import URIRef
+
 from cognite.neat._client import NeatClient
 from cognite.neat._graph.extractors import KnowledgeGraphExtractor
 from cognite.neat._issues import IssueList
@@ -37,7 +39,6 @@ class SessionState:
         last_entity = self.rule_store.provenance[-1].target_entity
         issues.action = f"{start} &#8594; {last_entity.display_name}"
         issues.hint = "Use the .inspect.issues() for more details."
-        self.instances.store.add_rules(last_entity.information)
         return issues
 
     def rule_import(self, importer: BaseImporter, enable_manual_edit: bool = False) -> IssueList:
@@ -61,9 +62,36 @@ class SessionState:
     def write_graph(self, extractor: KnowledgeGraphExtractor) -> IssueList:
         extract_issues = self.instances.store.write(extractor)
         issues = self.rule_store.import_graph(extractor)
-        self.instances.store.add_rules(self.rule_store.last_verified_information_rules)
         issues.extend(extract_issues)
         return issues
+
+    def _raise_exception_if_condition_not_met(
+        self,
+        activity: str,
+        empty_rules_store_required: bool = False,
+        empty_instances_store_required: bool = False,
+        instances_required: bool = False,
+        client_required: bool = False,
+    ) -> None:
+        """Set conditions for raising an error in the session that are used by various methods in the session."""
+        condition = set()
+        suggestion = set()
+
+        if client_required and not self.client:
+            condition.add(f"{activity} expects a client in NEAT session")
+            suggestion.add("Please provide a client")
+        if empty_rules_store_required and not self.rule_store.empty:
+            condition.add(f"{activity} expects no data model in NEAT session")
+            suggestion.add("Start new session")
+        if empty_instances_store_required and not self.instances.empty:
+            condition.add(f"{activity} expects no instances in NEAT session")
+            suggestion.add("Start new session")
+        if instances_required and self.instances.empty:
+            condition.add(f"{activity} expects instances in NEAT session")
+            suggestion.add("Read in instances to neat session")
+
+        if condition:
+            raise NeatSessionError(". ".join(condition) + ". " + ". ".join(suggestion) + ". And try again.")
 
 
 class InstancesState:
@@ -76,6 +104,10 @@ class InstancesState:
         self.storage_path = storage_path
         self.issue_lists = IssueList()
         self.outcome = UploadResultList()
+        # These contain prefixes added by Neat at the extraction stage.
+        # We store them such that they can be removed in the load stage.
+        self.neat_prefix_by_predicate_uri: dict[URIRef, str] = {}
+        self.neat_prefix_by_type_uri: dict[URIRef, str] = {}
 
         # Ensure that error handling is done in the constructor
         self.store: NeatGraphStore = _session_method_wrapper(self._create_store, "NeatSession")()

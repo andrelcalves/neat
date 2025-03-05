@@ -84,7 +84,7 @@ class InformationInputProperty(InputComponent[InformationProperty]):
     min_count: int | None = None
     max_count: int | float | None = None
     default: Any | None = None
-    instance_source: str | None = None
+    instance_source: str | list[str] | None = None
     # Only used internally
     inherited: bool = False
     neatId: str | URIRef | None = None
@@ -110,6 +110,7 @@ class InformationInputClass(InputComponent[InformationClass]):
     name: str | None = None
     description: str | None = None
     implements: str | list[ClassEntity] | None = None
+    instance_source: str | None = None
     neatId: str | URIRef | None = None
     # linking
     physical: str | URIRef | None = None
@@ -127,6 +128,7 @@ class InformationInputClass(InputComponent[InformationClass]):
         output = super().dump()
         parent: list[ClassEntity] | None = None
         if isinstance(self.implements, str):
+            self.implements = self.implements.strip()
             parent = [ClassEntity.load(parent, prefix=default_prefix) for parent in self.implements.split(",")]
         elif isinstance(self.implements, list):
             parent = [ClassEntity.load(parent_, prefix=default_prefix) for parent_ in self.implements]

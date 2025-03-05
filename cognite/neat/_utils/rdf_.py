@@ -7,6 +7,8 @@ from pydantic import HttpUrl, TypeAdapter, ValidationError
 from rdflib import Graph, Namespace, URIRef
 from rdflib import Literal as RdfLiteral
 
+from cognite.neat._constants import SPACE_URI_PATTERN
+
 Triple: TypeAlias = tuple[URIRef, URIRef, RdfLiteral | URIRef]
 
 
@@ -100,12 +102,41 @@ def get_namespace(URI: URIRef, special_separator: str = "#_") -> str:
     str
         Entity id without namespace
     """
+    return split_uri(URI, special_separator)[0]
+
+
+def namespace_as_space(namespace: str) -> str | None:
+    if match := SPACE_URI_PATTERN.match(namespace):
+        return match.group("space")
+    return None
+
+
+def split_uri(URI: URIRef, special_separator: str = "#_") -> tuple[str, str]:
+    """Splits URI into namespace and entity name
+
+    Parameters
+    ----------
+    URI : URIRef
+        URI of an entity
+    special_separator : str
+        Special separator to use instead of # or / if present in URI
+        Set by default to "#_" which covers special client use case
+
+    Returns
+    -------
+    tuple[str, str]
+        Tuple of namespace and entity name
+    """
     if special_separator in URI:
-        return URI.split(special_separator)[0] + special_separator
+        namespace, rest = URI.split(special_separator, maxsplit=1)
+        namespace += special_separator
     elif "#" in URI:
-        return URI.split("#")[0] + "#"
+        namespace, rest = URI.split("#", maxsplit=1)
+        namespace += "#"
     else:
-        return "/".join(URI.split("/")[:-1]) + "/"
+        namespace, rest = URI.rsplit("/", maxsplit=1)
+        namespace += "/"
+    return namespace, rest
 
 
 def as_neat_compliant_uri(uri: URIRef) -> URIRef:
@@ -154,7 +185,7 @@ def _traverse(hierarchy: dict, graph: dict, names: list[str]) -> dict:
     return hierarchy
 
 
-def get_inheritance_path(child: Any, child_parent: dict[Any, list[Any]]) -> list:
+def get_inheritance_path(child: Any, child_parent: dict[Any, set[Any]]) -> list[Any]:
     """Returns the inheritance path for a given child
 
     Args:
@@ -167,7 +198,7 @@ def get_inheritance_path(child: Any, child_parent: dict[Any, list[Any]]) -> list
     !!! note "No Circular Inheritance"
         This method assumes that the child_parent dictionary is a tree and does not contain any cycles.
     """
-    path = []
+    path: list[Any] = []
     if child in child_parent:
         path.extend(child_parent[child])
         for parent in child_parent[child]:

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cognite-neat"
-version = "0.109.4"
+version = "0.0.0"
 readme = "README.md"
 description = "Knowledge graph transformation"
 authors = [
@@ -121,6 +121,7 @@ docs = [
 google = ["gspread", "google-api-python-client", "google-auth-oauthlib"]
 oxi = ["oxrdflib", "pyoxigraph"]
 
+
 all = [
     "pyoxigraph",
     "oxrdflib",
@@ -144,6 +145,7 @@ memray = [
     { version = "^1.7", platform = "linux" },
 ]
 httpx = "*"
+marko = "^2.1.2"
 mypy = "^1.4"
 pandas-stubs = "^2"
 types-PyYAML = "^6"
@@ -152,8 +154,9 @@ types-requests = "^2"
 types-setuptools = "^68"
 types-tqdm = "^4.67.0.20241221"
 networkx-stubs = "^0.0.1"
-cognite-toolkit = "^0.4.5"
+cognite-toolkit = "^0.4.8"
 tqdm = "^4.67.1"
+deepdiff = "^8.2.0"
 
 [build-system]
 requires = ["poetry>=0.12"]

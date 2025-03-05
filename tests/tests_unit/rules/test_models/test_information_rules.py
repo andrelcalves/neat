@@ -6,7 +6,9 @@ from cognite.client import data_modeling as dm
 
 from cognite.neat._constants import DMS_CONTAINER_PROPERTY_SIZE_LIMIT
 from cognite.neat._issues import NeatError
-from cognite.neat._issues.errors import NeatValueError, ResourceNotDefinedError
+from cognite.neat._issues._base import MultiValueError
+from cognite.neat._issues.errors import ResourceNotDefinedError
+from cognite.neat._issues.errors._resources import ResourceDuplicatedError
 from cognite.neat._rules._shared import ReadRules
 from cognite.neat._rules.models import DMSRules, SheetList, data_types
 from cognite.neat._rules.models.data_types import DataType, String
@@ -74,11 +76,12 @@ def case_insensitive_value_types():
     )
 
 
-def invalid_domain_rules_cases():
+def duplicated_entries():
     yield pytest.param(
         {
             "Metadata": {
                 "role": "information architect",
+                "schema": "complete",
                 "creator": "Jon, Emma, David",
                 "space": "power",
                 "external_id": "power2consumer",
@@ -91,24 +94,58 @@ def invalid_domain_rules_cases():
                 {
                     "Class": "GeneratingUnit",
                     "Description": None,
-                    "Implements": None,
-                }
+                    "Parent Class": None,
+                    "Source": "http://www.iec.ch/TC57/CIM#GeneratingUnit",
+                    "Match": "exact",
+                },
+                {
+                    "Class": "GeneratingUnit",
+                    "Description": None,
+                    "Parent Class": None,
+                    "Source": "http://www.iec.ch/TC57/CIM#GeneratingUnit",
+                    "Match": "exact",
+                },
             ],
             "Properties": [
                 {
                     "Class": "GeneratingUnit",
                     "Property": "name",
                     "Description": None,
-                    "Value Type": "string",
+                    "Value Type": "StrING",
                     "Min Count": 1,
                     "Max Count": 1.0,
                     "Default": None,
-                    "Instance Source": ":GeneratingUnit(cim:name)",
-                }
+                    "Source": None,
+                    "MatchType": None,
+                    "Transformation": None,
+                },
+                {
+                    "Class": "GeneratingUnit",
+                    "Property": "name",
+                    "Description": None,
+                    "Value Type": "StrING",
+                    "Min Count": 1,
+                    "Max Count": 1.0,
+                    "Default": None,
+                    "Source": None,
+                    "MatchType": None,
+                    "Transformation": None,
+                },
             ],
         },
-        NeatValueError("Invalid RDF Path - the prefix is empty in ':GeneratingUnit'"),
-        id="missing_rule",
+        {
+            ResourceDuplicatedError(
+                identifier="name",
+                resource_type="property",
+                location="the Properties sheet at row 1 and 2 if data model is read from a spreadsheet.",
+            ),
+            ResourceDuplicatedError(
+                identifier=ClassEntity(prefix="power", suffix="GeneratingUnit"),
+                resource_type="class",
+                location="the Classes sheet at row 1 and 2 if data model is read from a spreadsheet.",
+            ),
+        },
+        id="duplicated_entries",
     )
 
 
@@ -163,6 +200,16 @@ def incomplete_rules_case():
 
 
 class TestInformationRules:
+    @pytest.mark.parametrize("duplicated_rules, expected_exception", list(duplicated_entries()))
+    def test_duplicated_entries(self, duplicated_rules, expected_exception) -> None:
+        input_rules = ReadRules(rules=InformationInputRules.load(duplicated_rules), read_context={})
+        transformer = VerifyAnyRules(validate=True)
+
+        with pytest.raises(MultiValueError) as e:
+            _ = transformer.transform(input_rules)
+
+        assert set(e.value.errors) == expected_exception
+
     def test_load_valid_jon_rules(self, david_spreadsheet: dict[str, dict[str, Any]]) -> None:
         valid_rules = InformationRules.model_validate(InformationInputRules.load(david_spreadsheet).dump())
 
@@ -175,14 +222,6 @@ class TestInformationRules:
         }
         missing = sample_expected_properties - {f"{prop.class_}.{prop.property_}" for prop in valid_rules.properties}
         assert not missing, f"Missing properties: {missing}"
-
-    @pytest.mark.parametrize("invalid_rules, expected_exception", list(invalid_domain_rules_cases()))
-    def test_invalid_rules(self, invalid_rules: dict[str, dict[str, Any]], expected_exception: NeatError) -> None:
-        with pytest.raises(ValueError) as e:
-            InformationRules.model_validate(invalid_rules)
-        errors = NeatError.from_errors(e.value.errors())
-        assert len(errors) == 1
-        assert errors[0] == expected_exception
 
     @pytest.mark.parametrize("incomplete_rules, expected_exception", list(incomplete_rules_case()))
     @pytest.mark.skip("Temp skipping: enabling in new PR")
