@@ -17,6 +17,8 @@ from rdflib import Namespace
 from cognite.neat._client import NeatClient
 from cognite.neat._client.data_classes.data_modeling import ContainerApplyDict, ViewApplyDict
 from cognite.neat._constants import (
+    COGNITE_CORE_CONCEPTS,
+    COGNITE_CORE_FEATURES,
     COGNITE_MODELS,
     COGNITE_SPACES,
     DMS_CONTAINER_PROPERTY_SIZE_LIMIT,
@@ -716,9 +718,9 @@ class ToEnterpriseModel(ToExtensionModel):
                 view=view_entity,
                 view_property=property_id,
                 value_type=String(),
-                nullable=True,
+                min_count=0,
                 immutable=False,
-                is_list=False,
+                max_count=1,
                 container=container_entity,
                 container_property=property_id,
             )
@@ -923,9 +925,9 @@ class ToSolutionModel(ToExtensionModel):
                         view=view.view,
                         view_property=f"{prefix}{self.dummy_property}",
                         value_type=String(),
-                        nullable=True,
+                        min_count=0,
+                        max_count=1,
                         immutable=False,
-                        is_list=False,
                         container=container_entity,
                         container_property=f"{prefix}{self.dummy_property}",
                     )
@@ -942,9 +944,9 @@ class ToSolutionModel(ToExtensionModel):
                         view=view.view,
                         view_property=self.direct_property,
                         value_type=read_view,
-                        nullable=True,
+                        min_count=0,
+                        max_count=1,
                         immutable=False,
-                        is_list=False,
                         container=container_entity,
                         container_property=self.direct_property,
                     )
@@ -1528,12 +1530,17 @@ class _InformationRulesConverter:
 
         container: ContainerEntity | None = None
         container_property: str | None = None
-        is_list: bool | None = info_property.is_list
-        nullable: bool | None = not info_property.is_mandatory
+        # DMS should have min count of either 0 or 1
+        min_count = min(1, max(0, info_property.min_count or 0))
+        max_count = info_property.max_count
         if isinstance(connection, EdgeEntity):
-            nullable = None
+            min_count = 0
+            max_count = 1 if max_count == 1 else float("inf")
+        elif isinstance(connection, ReverseConnectionEntity):
+            min_count = 0
+            max_count = 1 if max_count == 1 else float("inf")
         elif connection == "direct":
-            nullable = True
+            min_count = 0
             container, container_property = self._get_container(info_property, default_space)
         else:
             container, container_property = self._get_container(info_property, default_space)
@@ -1541,8 +1548,8 @@ class _InformationRulesConverter:
         dms_property = DMSProperty(
             name=info_property.name,
             value_type=value_type,
-            nullable=nullable,
-            is_list=is_list,
+            min_count=min_count,
+            max_count=max_count,
             connection=connection,
             default=info_property.default,
             container=container,
@@ -1570,7 +1577,9 @@ class _InformationRulesConverter:
         ):
             edge_value_type = edge_value_types_by_class_property_pair[(prop.class_, prop.property_)]
             return EdgeEntity(properties=edge_value_type.as_view_entity(default_space, default_version))
-        if isinstance(value_type, ViewEntity) and prop.is_list:
+        if isinstance(value_type, ViewEntity) and (
+            prop.max_count in {float("inf"), None} or (isinstance(prop.max_count, int | float) and prop.max_count > 1)
+        ):
             return EdgeEntity()
         elif isinstance(value_type, ViewEntity):
             return "direct"
@@ -1759,8 +1768,8 @@ class _DMSRulesConverter:
                 property_=property_.view_property,
                 value_type=value_type,
                 description=property_.description,
-                min_count=(0 if property_.nullable or property_.nullable is None else 1),
-                max_count=(float("inf") if property_.is_list or property_.nullable is None else 1),
+                min_count=property_.min_count,
+                max_count=property_.max_count,
             )
 
             # Linking
@@ -1793,6 +1802,76 @@ class _DMSRulesConverter:
             created=metadata.created,
             updated=metadata.updated,
         )
+
+
+class _SubsetEditableCDMRules(VerifiedRulesTransformer[DMSRules, DMSRules]):
+    """Subsets editable CDM rules to only include desired set of CDM concepts.
+
+    !!! note "Platypus UI limitations"
+        This is temporal solution to enable cleaner extension of core data model,
+        assuring that Platypus UI will work correctly, including Data Model Editor,
+        Query Explorer and Search.
+    """
+
+    def __init__(self, views: set[ViewEntity]):
+        if not_in_cognite_core := {view.external_id for view in views} - COGNITE_CORE_CONCEPTS.union(
+            COGNITE_CORE_FEATURES
+        ):
+            raise NeatValueError(
+                f"Concept(s) {', '.join(not_in_cognite_core)} is/are not part of the Cognite Core Data Model. Aborting."
+            )
+
+        self._views = views
+
+    def transform(self, rules: DMSRules) -> DMSRules:
+        # should check to make sure data model is based on the editable CDM
+        # if not raise an error
+
+        subsetted_rules: dict[str, Any] = {
+            "metadata": rules.metadata.model_copy(),
+            "views": SheetList[DMSView](),
+            "properties": SheetList[DMSProperty](),
+            "containers": SheetList[DMSContainer](),
+            "enum": rules.enum,
+            "nodes": rules.nodes,
+        }
+
+        containers_to_keep = set()
+
+        if editable_views_to_keep := self._editable_views_to_keep(rules):
+            for view in rules.views:
+                if view.view in editable_views_to_keep or view.view.space in COGNITE_SPACES:
+                    subsetted_rules["views"].append(view)
+
+            for property_ in rules.properties:
+                if property_.view in editable_views_to_keep and (
+                    isinstance(property_.value_type, DataType)
+                    or isinstance(property_.value_type, DMSUnknownEntity)
+                    or (isinstance(property_.value_type, ViewEntity) and property_.value_type in editable_views_to_keep)
+                ):
+                    subsetted_rules["properties"].append(property_)
+                    if property_.container:
+                        containers_to_keep.add(property_.container)
+
+            if rules.containers:
+                for container in rules.containers:
+                    if container.container in containers_to_keep:
+                        subsetted_rules["containers"].append(container)
+            try:
+                return DMSRules.model_validate(subsetted_rules)
+            except ValidationError as e:
+                raise NeatValueError(f"Cannot subset rules: {e}") from e
+        else:
+            raise NeatValueError("Cannot subset rules: provided data model is not based on Core Data Model")
+
+    def _editable_views_to_keep(self, rules: DMSRules) -> set[ViewEntity]:
+        return {
+            view.view
+            for view in rules.views
+            if view.view.space not in COGNITE_SPACES
+            and view.implements
+            and any(implemented in self._views for implemented in view.implements)
+        }
 
 
 class SubsetDMSRules(VerifiedRulesTransformer[DMSRules, DMSRules]):

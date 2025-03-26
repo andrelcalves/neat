@@ -64,6 +64,79 @@ COGNITE_SPACES = frozenset(
         "cdf_units",
     }
 )
+
+COGNITE_CORE_CONCEPTS = frozenset(
+    {
+        "CogniteFile",
+        "CogniteCubeMap",
+        "CogniteCADRevision",
+        "CognitePointCloudVolume",
+        "Cognite360ImageAnnotation",
+        "CogniteAnnotation",
+        "CogniteUnit",
+        "CogniteAsset",
+        "Cognite3DObject",
+        "Cognite3DRevision",
+        "Cognite360Image",
+        "CogniteDiagramAnnotation",
+        "Cognite360ImageCollection",
+        "Cognite360ImageStation",
+        "CognitePointCloudModel",
+        "CogniteTimeSeries",
+        "Cognite3DTransformation",
+        "CogniteEquipment",
+        "Cognite360ImageModel",
+        "CogniteAssetClass",
+        "CogniteAssetType",
+        "CogniteEquipmentType",
+        "Cognite3DModel",
+        "CogniteCADModel",
+        "CognitePointCloudRevision",
+        "CogniteCADNode",
+        "CogniteFileCategory",
+        "CogniteActivity",
+    }
+)
+
+
+COGNITE_CORE_FEATURES = frozenset(
+    {
+        "CogniteDescribable",
+        "CogniteSourceable",
+        "CogniteSourceSystem",
+        "CogniteSchedulable",
+        "CogniteVisualizable",
+    }
+)
+
+COGNITE_3D_CONCEPTS = frozenset(
+    {
+        "Cognite3DModel",
+        "Cognite3DObject",
+        "Cognite3DRevision",
+        "Cognite3DTransformation",
+        "Cognite360Image",
+        "Cognite360ImageAnnotation",
+        "Cognite360ImageCollection",
+        "Cognite360ImageModel",
+        "Cognite360ImageStation",
+        "CogniteCADModel",
+        "CogniteCADNode",
+        "CogniteCADRevision",
+        "CogniteCubeMap",
+        "CognitePointCloudModel",
+        "CognitePointCloudRevision",
+        "CognitePointCloudVolume",
+    }
+)
+
+COGNITE_ANNOTATION = frozenset(
+    {
+        "CogniteAnnotation",
+        "CogniteDiagramAnnotation",
+    }
+)
+
 DMS_LISTABLE_PROPERTY_LIMIT = 1000
 
 EXAMPLE_RULES = PACKAGE_DIRECTORY / "_rules" / "examples"
@@ -117,9 +190,12 @@ DEFAULT_URI = ""
 
 DEFAULT_DOCS_URL = "https://cognite-neat.readthedocs-hosted.com/en/latest/"
 
+# These are the API limits for the DMS API, https://docs.cognite.com/cdf/dm/dm_reference/dm_limits_and_restrictions
 DMS_CONTAINER_PROPERTY_SIZE_LIMIT = 100
 DMS_VIEW_CONTAINER_SIZE_LIMIT = 10
-DMS_DIRECT_RELATION_LIST_LIMIT = 100
+DMS_DIRECT_RELATION_LIST_DEFAULT_LIMIT = 100
+DMS_PRIMITIVE_LIST_DEFAULT_LIMIT = 1000
+DMS_CONTAINER_LIST_MAX_LIMIT = 2000
 
 _ASSET_ROOT_PROPERTY = {
     "connection": "direct",

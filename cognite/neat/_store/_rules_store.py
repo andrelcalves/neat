@@ -221,7 +221,7 @@ class NeatRulesStore:
         for agent_tool in transformer:
 
             def action(
-                transformer_item=agent_tool,
+                transformer_item: VerifiedRulesTransformer = agent_tool,
             ) -> tuple[InformationRules, DMSRules | None]:
                 last_change = self.provenance[-1]
                 source_entity = last_change.target_entity
@@ -255,7 +255,7 @@ class NeatRulesStore:
         self,
         action: Callable[[], tuple[InformationRules, DMSRules | None]],
         agent_tool: BaseImporter | VerifiedRulesTransformer | KnowledgeGraphExtractor,
-    ):
+    ) -> IssueList:
         result, issue_list, start, end = self._do_activity(action)
         self._last_issues = issue_list
 
@@ -312,7 +312,7 @@ class NeatRulesStore:
     def _do_activity(
         self,
         action: Callable[[], tuple[InformationRules, DMSRules | None]],
-    ):
+    ) -> tuple[tuple[InformationRules, DMSRules | None], IssueList, datetime, datetime]:
         """This private method is used to execute an activity and return the result and issues."""
         start = datetime.now(timezone.utc)
         result: tuple[InformationRules, DMSRules | None] | None = None
@@ -422,6 +422,20 @@ class NeatRulesStore:
         return identifier + f"/Iteration_{self._iteration_by_id[identifier]}"
 
     @property
+    def try_get_last_dms_rules(self) -> DMSRules | None:
+        if not self.provenance:
+            return None
+        if self.provenance[-1].target_entity.dms is None:
+            return None
+        return self.provenance[-1].target_entity.dms
+
+    @property
+    def try_get_last_information_rules(self) -> InformationRules | None:
+        if not self.provenance:
+            return None
+        return self.provenance[-1].target_entity.information
+
+    @property
     def last_verified_dms_rules(self) -> DMSRules:
         if not self.provenance:
             raise EmptyStore()
@@ -434,6 +448,13 @@ class NeatRulesStore:
         if not self.provenance:
             raise EmptyStore()
         return self.provenance[-1].target_entity.information
+
+    @property
+    def last_verified_rules(self) -> InformationRules | DMSRules | None:
+        if not self.provenance:
+            return None
+        last_entity = self.provenance[-1].target_entity
+        return last_entity.dms or last_entity.information
 
     @property
     def last_issues(self) -> IssueList | None:

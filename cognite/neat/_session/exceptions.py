@@ -3,7 +3,7 @@ import warnings
 from collections.abc import Callable
 from typing import Any
 
-from cognite.neat._alpha import AlphaWarning
+from cognite.neat._alpha import ExperimentalFeatureWarning
 from cognite.neat._issues.errors import CDFMissingClientError, NeatImportError
 from cognite.neat._issues.errors._external import OxigraphStorageLockedError
 from cognite.neat._issues.errors._general import NeatValueError
@@ -30,15 +30,15 @@ class NeatSessionError(Exception):
     ...
 
 
-def _session_method_wrapper(func: Callable, cls_name: str):
+def _session_method_wrapper(func: Callable, cls_name: str) -> Any:
     @functools.wraps(func)
-    def wrapper(*args: Any, **kwargs: Any):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         _COLLECTOR.track_session_command(f"{cls_name}.{func.__name__}", *args, **kwargs)
         try:
             with warnings.catch_warnings(record=True) as w:
                 result = func(*args, **kwargs)
                 for warning in w:
-                    if isinstance(warning.message, AlphaWarning):
+                    if isinstance(warning.message, ExperimentalFeatureWarning):
                         print(f"{_WARNING_PREFIX} {warning.message}")
 
             return result
@@ -59,7 +59,7 @@ def _session_method_wrapper(func: Callable, cls_name: str):
             else:
                 raise e
 
-    def _get_action():
+    def _get_action() -> str:
         action = func.__name__
         if action == "__call__":
             action = func.__qualname__.removesuffix(".__call__").removesuffix("API")
@@ -68,7 +68,7 @@ def _session_method_wrapper(func: Callable, cls_name: str):
     return wrapper
 
 
-def session_class_wrapper(cls: type):
+def session_class_wrapper(cls: type) -> type:
     """This decorator wraps all methods of a class.
 
     It should be used with all composition classes used with the NeatSession class.

@@ -279,7 +279,9 @@ class DMSSchema:
         return cls(**loaded)
 
     @classmethod
-    def _load_individual_resources(cls, items: list, attr: Field, trigger_error: str, resource_context) -> list[Any]:
+    def _load_individual_resources(
+        cls: Any, items: list, attr: Field, trigger_error: str, resource_context: list[Path]
+    ) -> list[Any]:
         type_ = cast(type, attr.type)
         resources = type_([])
         if not hasattr(type_, "_RESOURCE"):
@@ -304,6 +306,45 @@ class DMSSchema:
             else:
                 resources.append(loaded_instance)
         return resources
+
+    @classmethod
+    def from_read_model(cls, model: dm.DataModel[dm.View]) -> Self:
+        """Load schema from a read model.
+
+        CAVEAT: This method infers the containers and spaces from the views. This means that
+        for example indexes and constraints will not be captured in the containers.
+
+        Args:
+            model (dm.DataModel): The read model to load the schema from.
+        """
+        write_model = model.as_write()
+        write_model.views = [view.as_id() for view in model.views or []]
+        views = ViewApplyDict([view.as_write() for view in model.views])
+        containers = ContainerApplyDict()
+        for view in model.views:
+            for prop in view.properties.values():
+                if not isinstance(prop, dm.MappedProperty):
+                    continue
+                if prop.container not in containers:
+                    containers[prop.container] = dm.ContainerApply(
+                        space=prop.container.space,
+                        external_id=prop.container.external_id,
+                        properties={},
+                        used_for=view.used_for,
+                    )
+                containers[prop.container].properties[prop.container_property_identifier] = dm.ContainerProperty(
+                    type=prop.type,
+                    nullable=prop.nullable,
+                    auto_increment=prop.auto_increment,
+                    immutable=prop.immutable,
+                    default_value=prop.default_value,
+                    name=prop.name,
+                    description=prop.description,
+                )
+
+        schema = cls(data_model=write_model, views=views, containers=containers)
+        schema.spaces = SpaceApplyDict(dm.SpaceApply(space) for space in schema.referenced_spaces())
+        return schema
 
     def dump(self, camel_case: bool = True, sort: bool = True) -> dict[str, Any]:
         """Dump the schema to a dictionary that can be serialized to JSON.

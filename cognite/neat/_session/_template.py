@@ -3,7 +3,6 @@ from typing import Literal
 from cognite.client.data_classes.data_modeling import DataModelIdentifier
 
 from cognite.neat._issues import IssueList
-from cognite.neat._rules.models import DMSRules, InformationRules
 from cognite.neat._rules.models.dms import DMSValidation
 from cognite.neat._rules.transformers import (
     IncludeReferenced,
@@ -18,9 +17,9 @@ from .exceptions import NeatSessionError, session_class_wrapper
 
 
 @session_class_wrapper
-class CreateAPI:
+class TemplateAPI:
     """
-    Create new data model based on the given data.
+    Create a template for a new data model.
     """
 
     def __init__(self, state: SessionState):
@@ -29,10 +28,13 @@ class CreateAPI:
     def enterprise_model(
         self,
         data_model_id: DataModelIdentifier,
-        org_name: str = "My",
+        org_name: str = "CopyOf",
         dummy_property: str = "GUID",
     ) -> IssueList:
-        """Uses the current data model as a basis to create enterprise data model
+        """Creates a template for an enterprise model based on the current data model in the session.
+        An enterprise data model is a model that is used for read and write of instances. In addition,
+        it is governed by the organization.
+        The basis for an enterprise data model should be a Cognite Data Model.
 
         Args:
             data_model_id: The enterprise data model id that is being created
@@ -58,7 +60,7 @@ class CreateAPI:
                 - Charts
 
         """
-        last_rules = self._get_last_rules()
+        last_rules = self._state.rule_store.last_verified_rules
         issues = self._state.rule_transform(
             ToEnterpriseModel(
                 new_model_id=data_model_id,
@@ -71,19 +73,15 @@ class CreateAPI:
             self._state.last_reference = last_rules
         return issues
 
-    def _get_last_rules(self) -> InformationRules | DMSRules | None:
-        if not self._state.rule_store.provenance:
-            return None
-        last_entity = self._state.rule_store.provenance[-1].target_entity
-        return last_entity.dms or last_entity.information
-
     def solution_model(
         self,
         data_model_id: DataModelIdentifier,
         direct_property: str = "enterprise",
         view_prefix: str = "Enterprise",
     ) -> IssueList:
-        """Uses the current data model as a basis to create solution data model
+        """Creates a template for a solution model based on the current data model in the session.
+        A solution data model is for read and write of instances.
+        The basis for a solution data model should be an enterprise data model.
 
         Args:
             data_model_id: The solution data model id that is being created.
@@ -110,7 +108,7 @@ class CreateAPI:
             the containers in the solution data model space.
 
         """
-        last_rules = self._get_last_rules()
+        last_rules = self._state.rule_store.last_verified_rules
         issues = self._state.rule_transform(
             ToSolutionModel(
                 new_model_id=data_model_id,
@@ -128,7 +126,9 @@ class CreateAPI:
         data_model_id: DataModelIdentifier,
         include: Literal["same-space", "all"] = "same-space",
     ) -> IssueList:
-        """Uses the current data model as a basis to create data product data model.
+        """Creates a template for a data product model based on the current data model in the session.
+        A data product model is only used for reading of instances.
+        It can be based on any data model, but typically it is based on an enterprise or solution data model.
 
         A data product model is a data model that ONLY maps to containers and do not use implements. This is
         typically used for defining the data in a data product.
@@ -144,7 +144,7 @@ class CreateAPI:
                 If you set same-space, only the properties of the views in the same space as the data model
                 will be included.
         """
-        last_rules = self._get_last_rules()
+        last_rules = self._state.rule_store.last_verified_rules
         view_ids, container_ids = DMSValidation(
             self._state.rule_store.last_verified_dms_rules
         ).imported_views_and_containers_ids()

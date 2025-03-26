@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 from _pytest.mark import ParameterSet
 from cognite.client import data_modeling as dm
+from pydantic import ValidationError
 
 from cognite.neat._client.data_classes.data_modeling import (
     ContainerApplyDict,
@@ -200,7 +201,7 @@ def rules_schema_tests_cases() -> Iterable[ParameterSet]:
             DMSInputProperty(
                 value_type="WindTurbine",
                 connection="direct",
-                is_list=True,
+                max_count=100,
                 container="WindFarm",
                 container_property="windTurbines",
                 view="WindFarm",
@@ -412,7 +413,7 @@ def rules_schema_tests_cases() -> Iterable[ParameterSet]:
             DMSInputProperty(
                 value_type="CogniteTimeseries",
                 connection="reverse(property=asset)",
-                is_list=True,
+                max_count=float("inf"),
                 view="Asset",
                 view_property="timeseries",
             ),
@@ -423,11 +424,12 @@ def rules_schema_tests_cases() -> Iterable[ParameterSet]:
                 container_property="root",
                 view="Asset",
                 view_property="root",
+                max_count=1,
             ),
             DMSInputProperty(
                 value_type="Asset",
                 connection="reverse(property=root)",
-                is_list=True,
+                max_count=float("inf"),
                 view="Asset",
                 view_property="children",
             ),
@@ -437,6 +439,7 @@ def rules_schema_tests_cases() -> Iterable[ParameterSet]:
                 container_property="name",
                 view="CogniteTimeseries",
                 view_property="name",
+                max_count=1,
             ),
             DMSInputProperty(
                 value_type="Asset",
@@ -445,11 +448,12 @@ def rules_schema_tests_cases() -> Iterable[ParameterSet]:
                 container_property="asset",
                 view="CogniteTimeseries",
                 view_property="asset",
+                max_count=1,
             ),
             DMSInputProperty(
                 value_type="Activity",
                 connection="direct",
-                is_list=True,
+                max_count=100,
                 container="CogniteTimeseries",
                 container_property="activities",
                 view="CogniteTimeseries",
@@ -457,7 +461,7 @@ def rules_schema_tests_cases() -> Iterable[ParameterSet]:
             ),
             DMSInputProperty(
                 value_type="CogniteTimeseries",
-                is_list=True,
+                max_count=float("inf"),
                 connection="reverse(property=activities)",
                 view="Activity",
                 view_property="timeseries",
@@ -914,7 +918,7 @@ def invalid_container_definitions_test_cases() -> Iterable[ParameterSet]:
             properties=[
                 DMSInputProperty(
                     value_type="float64",
-                    is_list=False,
+                    max_count=1,
                     container="GeneratingUnit",
                     container_property="maxPower",
                     view="sp_core:Asset",
@@ -970,7 +974,7 @@ def invalid_container_definitions_test_cases() -> Iterable[ParameterSet]:
             properties=[
                 DMSInputProperty(
                     value_type="float64",
-                    is_list=True,
+                    max_count=1000,
                     container="GeneratingUnit",
                     container_property="maxPower",
                     view="sp_core:Asset",
@@ -978,7 +982,7 @@ def invalid_container_definitions_test_cases() -> Iterable[ParameterSet]:
                 ),
                 DMSInputProperty(
                     value_type="float64",
-                    is_list=False,
+                    max_count=1,
                     container="GeneratingUnit",
                     container_property="maxPower",
                     view="sp_core:Asset",
@@ -1026,7 +1030,7 @@ def invalid_container_definitions_test_cases() -> Iterable[ParameterSet]:
             properties=[
                 DMSInputProperty(
                     value_type="float64",
-                    nullable=True,
+                    min_count=0,
                     container="GeneratingUnit",
                     container_property="maxPower",
                     view="sp_core:Asset",
@@ -1034,7 +1038,7 @@ def invalid_container_definitions_test_cases() -> Iterable[ParameterSet]:
                 ),
                 DMSInputProperty(
                     value_type="float64",
-                    nullable=False,
+                    min_count=1,
                     container="GeneratingUnit",
                     container_property="maxPower",
                     view="sp_core:Asset",
@@ -1453,7 +1457,7 @@ class TestDMSRules:
                     view_property="object3D",
                     value_type="Cognite3DObject",
                     connection="direct",
-                    is_list=False,
+                    max_count=1,
                     container="CogniteVisualizable",
                     container_property="object3D",
                 ),
@@ -1491,7 +1495,7 @@ class TestDMSRules:
                     view_property="object3D",
                     value_type="Cognite3DObject",
                     connection="direct",
-                    is_list=False,
+                    max_count=1,
                     container="CogniteVisualizable",
                     container_property="object3D",
                 ),
@@ -1530,7 +1534,7 @@ class TestDMSRules:
                     view_property="object3D",
                     value_type="Cognite3DObject",
                     connection="direct",
-                    is_list=False,
+                    max_count=1,
                     container="CogniteVisualizable",
                     container_property="object3D",
                 ),
@@ -1604,7 +1608,7 @@ def edge_types_by_view_property_id_test_cases() -> Iterable[ParameterSet]:
                     view_property="windFarm",
                     value_type="WindFarm",
                     connection="edge",
-                    is_list=False,
+                    max_count=1,
                 ),
                 DMSInputProperty(
                     view="WindFarm",
@@ -1645,7 +1649,7 @@ def edge_types_by_view_property_id_test_cases() -> Iterable[ParameterSet]:
                     view_property="units",
                     value_type="GeneratingUnit",
                     connection="edge",
-                    is_list=False,
+                    max_count=1,
                 ),
                 DMSInputProperty(
                     view="WindFarm",
@@ -1808,3 +1812,48 @@ class TestDMSValidation:
 
         assert actual_views == expected_views
         assert actual_containers == expected_containers
+
+
+class TestDMSProperty:
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(
+                DMSInputProperty(
+                    "sp:MyView(version=v1)",
+                    "isOn",
+                    "boolean",
+                    default=1.0,
+                ),
+                id="Boolean with default 1.0 (reading from excel with pandas can lead TRUE to be read as 1.0)",
+            )
+        ],
+    )
+    def test_model_validate(self, raw: DMSInputProperty):
+        prop = DMSProperty.model_validate(raw.dump("sp", "v1"))
+        assert prop.model_dump(exclude_unset=True)
+
+    @pytest.mark.parametrize(
+        "raw, expected_msg",
+        [
+            pytest.param(
+                DMSInputProperty(
+                    "sp:MyView(version=v1)",
+                    "enterprise",
+                    value_type="sp:OtherView(version=v1)",
+                    connection=None,
+                ),
+                "Value error, Missing connection type for property 'enterprise'. "
+                "This is required with value type pointing to another view.",
+                id="Missing connection specification",
+            )
+        ],
+    )
+    def test_model_validate_invalid(self, raw: DMSInputProperty, expected_msg: str):
+        with pytest.raises(ValidationError) as e:
+            _ = DMSProperty.model_validate(raw.dump("sp", "v1"))
+
+        errors = e.value.errors()
+        assert len(errors) == 1
+        error = errors[0]
+        assert error["msg"] == expected_msg

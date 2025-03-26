@@ -21,7 +21,7 @@ from rdflib import RDF, URIRef
 
 from cognite.neat._client import NeatClient
 from cognite.neat._client._api_client import SchemaAPI
-from cognite.neat._constants import DMS_DIRECT_RELATION_LIST_LIMIT, is_readonly_property
+from cognite.neat._constants import DMS_DIRECT_RELATION_LIST_DEFAULT_LIMIT, is_readonly_property
 from cognite.neat._issues import IssueList, NeatError, NeatIssue, catch_issues
 from cognite.neat._issues.errors import (
     AuthorizationError,
@@ -205,6 +205,7 @@ class DMSLoader(CDFLoader[dm.InstanceApply]):
                 for missing_view in missing:
                     issues.append(ResourceNotFoundError(missing_view, "view", more="The view is not found in CDF."))
                 return [], issues
+            self._lookup_max_limits_size(self._client, views)
         else:
             views = dm.ViewList([])
             with catch_issues() as issues:
@@ -230,6 +231,29 @@ class DMSLoader(CDFLoader[dm.InstanceApply]):
             view_iteration.view = views_by_id.get(view_id)
             view_iterations.append(view_iteration)
         return view_iterations, issues
+
+    @staticmethod
+    def _lookup_max_limits_size(client: NeatClient, views: dm.ViewList) -> None:
+        """For listable container properties (mapped properties), the read version of the view does not
+        contain the max_list_size. This method will lookup the max_list_size from the containers definitions."""
+        containers = client.data_modeling.containers.retrieve(list(views.referenced_containers()))
+        properties_by_container_and_prop_id = {
+            (container.as_id(), prop_id): prop
+            for container in containers
+            for prop_id, prop in container.properties.items()
+        }
+
+        for view in views:
+            for prop in view.properties.values():
+                if not isinstance(prop, dm.MappedProperty):
+                    continue
+                if not isinstance(prop.type, ListablePropertyType):
+                    continue
+                prop_definition = properties_by_container_and_prop_id.get(
+                    (prop.container, prop.container_property_identifier)
+                )
+                if prop_definition and isinstance(prop_definition.type, ListablePropertyType):
+                    prop.type.max_list_size = prop_definition.type.max_list_size
 
     def _select_views_with_instances(self, view_query_by_id: ViewQueryDict) -> dict[dm.ViewId, _ViewIterator]:
         """Selects the views with data."""
@@ -374,7 +398,7 @@ class DMSLoader(CDFLoader[dm.InstanceApply]):
 
                 field_definitions[prop_id] = (python_type, default_value)
 
-        def parse_list(cls, value: Any, info: ValidationInfo) -> list[str]:
+        def parse_list(cls: Any, value: Any, info: ValidationInfo) -> list[str]:
             if isinstance(value, list) and list.__name__ not in _get_field_value_types(cls, info):
                 if len(value) > 1:
                     warnings.warn(
@@ -388,7 +412,7 @@ class DMSLoader(CDFLoader[dm.InstanceApply]):
 
             return value
 
-        def parse_json_string(cls, value: Any, info: ValidationInfo) -> dict | list:
+        def parse_json_string(cls: Any, value: Any, info: ValidationInfo) -> dict | list:
             if isinstance(value, dict):
                 return value
             elif isinstance(value, list):
@@ -411,26 +435,30 @@ class DMSLoader(CDFLoader[dm.InstanceApply]):
 
         if direct_relation_by_property:
 
-            def parse_direct_relation(cls, value: list, info: ValidationInfo) -> dict | list[dict]:
+            def parse_direct_relation(cls: Any, value: list, info: ValidationInfo) -> dict | list[dict]:
                 # We validate above that we only get one value for single direct relations.
                 if list.__name__ in _get_field_value_types(cls, info):
-                    ids = (self._create_instance_id(v, "node", stop_on_exception=True) for v in value)
-                    result = [id_.dump(camel_case=True, include_instance_type=False) for id_ in ids]
-                    # Todo: Account for max_list_limit
-                    if len(result) <= DMS_DIRECT_RELATION_LIST_LIMIT:
-                        return result
-                    warnings.warn(
-                        PropertyDirectRelationLimitWarning(
-                            identifier="unknown",
-                            resource_type="view property",
-                            property_name=cast(str, cls.model_fields[info.field_name].alias or info.field_name),
-                            limit=DMS_DIRECT_RELATION_LIST_LIMIT,
-                        ),
-                        stacklevel=2,
+                    # To get deterministic results
+                    value.sort()
+                    limit = (
+                        # We know that info.field_name will always be set due to *direct_relation_by_property.keys()
+                        direct_relation_by_property[cast(str, info.field_name)].max_list_size
+                        or DMS_DIRECT_RELATION_LIST_DEFAULT_LIMIT
                     )
-                    # To get deterministic results, we sort by space and externalId
-                    result.sort(key=lambda x: (x["space"], x["externalId"]))
-                    return result[:DMS_DIRECT_RELATION_LIST_LIMIT]
+                    if len(value) > limit:
+                        warnings.warn(
+                            PropertyDirectRelationLimitWarning(
+                                identifier="unknown",
+                                resource_type="view property",
+                                property_name=cast(str, cls.model_fields[info.field_name].alias or info.field_name),
+                                limit=limit,
+                            ),
+                            stacklevel=2,
+                        )
+                        value = value[:limit]
+
+                    ids = (self._create_instance_id(v, "node", stop_on_exception=True) for v in value)
+                    return [id_.dump(camel_case=True, include_instance_type=False) for id_ in ids]
                 elif value:
                     return self._create_instance_id(value[0], "node", stop_on_exception=True).dump(
                         camel_case=True, include_instance_type=False
@@ -443,7 +471,7 @@ class DMSLoader(CDFLoader[dm.InstanceApply]):
 
         if unit_properties:
 
-            def parse_direct_relation_to_unit(cls, value: Any, info: ValidationInfo) -> dict | list[dict]:
+            def parse_direct_relation_to_unit(cls: Any, value: Any, info: ValidationInfo) -> dict | list[dict]:
                 if value:
                     external_id = remove_namespace_from_uri(value[0])
                     if self._unquote_external_ids:
@@ -457,7 +485,7 @@ class DMSLoader(CDFLoader[dm.InstanceApply]):
 
         if text_fields:
 
-            def parse_text(cls, value: Any, info: ValidationInfo) -> str | list[str]:
+            def parse_text(cls: Any, value: Any, info: ValidationInfo) -> str | list[str]:
                 if isinstance(value, list):
                     return [remove_namespace_from_uri(v) if isinstance(v, URIRef) else str(v) for v in value]
                 return remove_namespace_from_uri(value) if isinstance(value, URIRef) else str(value)
@@ -701,5 +729,5 @@ class DMSLoader(CDFLoader[dm.InstanceApply]):
             yield result
 
 
-def _get_field_value_types(cls, info):
+def _get_field_value_types(cls: Any, info: ValidationInfo) -> Any:
     return [type_.__name__ for type_ in get_args(cls.model_fields[info.field_name].annotation)]

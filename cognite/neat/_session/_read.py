@@ -4,7 +4,7 @@ from typing import Any, Literal, cast
 from cognite.client.data_classes.data_modeling import DataModelId, DataModelIdentifier
 from cognite.client.utils.useful_types import SequenceNotStr
 
-from cognite.neat._alpha import AlphaFlags
+from cognite.neat._alpha import ExperimentalFlags
 from cognite.neat._client import NeatClient
 from cognite.neat._constants import (
     CLASSIC_CDF_NAMESPACE,
@@ -28,7 +28,12 @@ from cognite.neat._issues.errors import NeatValueError
 from cognite.neat._issues.warnings import MissingCogniteClientWarning
 from cognite.neat._rules import catalog, importers
 from cognite.neat._rules.importers import BaseImporter
+from cognite.neat._rules.models.entities._single_value import ViewEntity
 from cognite.neat._rules.transformers import ClassicPrepareCore
+from cognite.neat._rules.transformers._converters import (
+    ToEnterpriseModel,
+    _SubsetEditableCDMRules,
+)
 from cognite.neat._utils.reader import NeatReader
 
 from ._state import SessionState
@@ -113,6 +118,86 @@ class CDFReadAPI(BaseReadAPI):
 
         importer = importers.DMSImporter.from_data_model_id(cast(NeatClient, self._state.client), data_model_id)
         return self._state.rule_import(importer)
+
+    def core_data_model(self, concepts: str | list[str]) -> IssueList:
+        """Subset the data model to the desired concepts.
+
+        Args:
+            concepts: The concepts to subset the data model to
+
+        Returns:
+            IssueList: A list of issues that occurred during the transformation.
+
+        Example:
+            Read the CogniteCore data model and reduce the data model to only the 'CogniteAsset' concept.
+            ```python
+            neat = NeatSession(CogniteClient())
+
+            neat.subset.data_model.core_data_model(concepts=["CogniteAsset", "CogniteEquipment"])
+            ```
+
+        !!! note "Bundle of actions"
+            This method is a helper method that bundles the following actions:
+            - Imports the latest version of Cognite's Core Data Model (CDM)
+            - Makes editable copy of the CDM concepts
+            - Subsets the copy to the desired concepts to desired set of concepts
+        """
+
+        concepts = concepts if isinstance(concepts, list | set) else [concepts]
+
+        self._state._raise_exception_if_condition_not_met(
+            "Subset Core Data Model",
+            empty_rules_store_required=True,
+            client_required=True,
+        )
+
+        warnings.filterwarnings("default")
+        ExperimentalFlags.core_data_model_subsetting.warn()
+
+        cdm_v1 = DataModelId.load(("cdf_cdm", "CogniteCore", "v1"))
+        importer: importers.DMSImporter = importers.DMSImporter.from_data_model_id(
+            cast(NeatClient, self._state.client), cdm_v1
+        )
+        issues = self._state.rule_import(importer)
+
+        if issues.has_errors:
+            return issues
+
+        cdm_rules = self._state.rule_store.last_verified_rules
+
+        issues.extend(
+            self._state.rule_transform(
+                ToEnterpriseModel(
+                    new_model_id=("my_space", "MyCDMSubset", "v1"),
+                    org_name="CopyOf",
+                    dummy_property="GUID",
+                    move_connections=True,
+                )
+            )
+        )
+
+        if issues.has_errors:
+            return issues
+
+        issues.extend(
+            self._state.rule_transform(
+                _SubsetEditableCDMRules(
+                    views={
+                        ViewEntity(
+                            space=cdm_v1.space,
+                            externalId=concept,
+                            version=cast(str, cdm_v1.version),
+                        )
+                        for concept in concepts
+                    }
+                )
+            )
+        )
+
+        if cdm_rules and not issues.has_errors:
+            self._state.last_reference = cdm_rules
+
+        return issues
 
     def graph(
         self,
@@ -361,7 +446,12 @@ class ExcelReadAPI(BaseReadAPI):
 
         if enable_manual_edit:
             warnings.filterwarnings("default")
-            AlphaFlags.manual_rules_edit.warn()
+            ExperimentalFlags.manual_rules_edit.warn()
+        else:
+            self._state._raise_exception_if_condition_not_met(
+                "Read Excel Rules",
+                empty_rules_store_required=True,
+            )
 
         return self._state.rule_import(importers.ExcelImporter(path), enable_manual_edit)
 
@@ -381,6 +471,10 @@ class YamlReadAPI(BaseReadAPI):
             neat.read.yaml("path_to_toolkit_yamls")
             ```
         """
+        self._state._raise_exception_if_condition_not_met(
+            "Read YAML data model",
+            empty_rules_store_required=True,
+        )
         reader = NeatReader.create(io)
         path = reader.materialize_path()
         importer: BaseImporter
@@ -421,7 +515,7 @@ class CSVReadAPI(BaseReadAPI):
 
     def __call__(self, io: Any, type: str, primary_key: str) -> None:
         warnings.filterwarnings("default")
-        AlphaFlags.csv_read.warn()
+        ExperimentalFlags.csv_read.warn()
 
         engine = import_engine()
         engine.set.format = "csv"
@@ -479,7 +573,7 @@ class XMLReadAPI(BaseReadAPI):
             - remove edges to nodes that do not exist in the extracted graph
         """
         warnings.filterwarnings("default")
-        AlphaFlags.dexpi_read.warn()
+        ExperimentalFlags.dexpi_read.warn()
 
         self._state._raise_exception_if_condition_not_met(
             "Read DEXPI file",
@@ -522,7 +616,7 @@ class XMLReadAPI(BaseReadAPI):
         for transformer in transformers:
             self._state.instances.store.transform(cast(Transformers, transformer))
 
-    def aml(self, io: Any):
+    def aml(self, io: Any) -> None:
         """Reads an AML file into NeatSession and executes a set of predefined transformations.
 
         Args:
@@ -539,7 +633,7 @@ class XMLReadAPI(BaseReadAPI):
             - remove edges to nodes that do not exist in the extracted graph
         """
         warnings.filterwarnings("default")
-        AlphaFlags.aml_read.warn()
+        ExperimentalFlags.aml_read.warn()
 
         self._state._raise_exception_if_condition_not_met(
             "Read AML file",
@@ -599,7 +693,7 @@ class RDFReadAPI(BaseReadAPI):
             ```
         """
         warnings.filterwarnings("default")
-        AlphaFlags.ontology_read.warn()
+        ExperimentalFlags.ontology_read.warn()
 
         self._state._raise_exception_if_condition_not_met(
             "Read Ontology file",
@@ -622,7 +716,7 @@ class RDFReadAPI(BaseReadAPI):
             ```
         """
         warnings.filterwarnings("default")
-        AlphaFlags.imf_read.warn()
+        ExperimentalFlags.imf_read.warn()
 
         self._state._raise_exception_if_condition_not_met(
             "Read IMF file",
@@ -634,6 +728,10 @@ class RDFReadAPI(BaseReadAPI):
         return self._state.rule_import(importer)
 
     def instances(self, io: Any) -> IssueList:
+        self._state._raise_exception_if_condition_not_met(
+            "Read RDF Instances",
+            empty_rules_store_required=True,
+        )
         reader = NeatReader.create(io)
         self._state.instances.store.write(extractors.RdfFileExtractor(reader.materialize_path()))
         return IssueList()
@@ -674,12 +772,6 @@ class Examples:
     def __init__(self, state: SessionState) -> None:
         self._state = state
 
-    @property
-    def _get_client(self) -> NeatClient:
-        if self._state.client is None:
-            raise NeatValueError("No client provided. Please provide a client to read a data model.")
-        return self._state.client
-
     def nordic44(self) -> IssueList:
         """Reads the Nordic 44 knowledge graph into the NeatSession graph store."""
 
@@ -709,8 +801,11 @@ class Examples:
         self._state._raise_exception_if_condition_not_met(
             "Read Core Data Model example",
             empty_rules_store_required=True,
+            client_required=True,
         )
 
         cdm_v1 = DataModelId.load(("cdf_cdm", "CogniteCore", "v1"))
-        importer: importers.DMSImporter = importers.DMSImporter.from_data_model_id(self._get_client, cdm_v1)
+        importer: importers.DMSImporter = importers.DMSImporter.from_data_model_id(
+            cast(NeatClient, self._state.client), cdm_v1
+        )
         return self._state.rule_import(importer)

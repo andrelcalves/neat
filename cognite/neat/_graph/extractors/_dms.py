@@ -1,15 +1,15 @@
+import typing
 import urllib.parse
-from collections.abc import Iterable, Iterator, Set
+from collections.abc import Callable, Iterable, Iterator, Set
 from functools import cached_property
-from typing import cast
 
-from cognite.client import CogniteClient
 from cognite.client import data_modeling as dm
 from cognite.client.data_classes.data_modeling import DataModelIdentifier
-from cognite.client.data_classes.data_modeling.instances import Instance, InstanceSort
+from cognite.client.data_classes.data_modeling.instances import Edge, Instance, Node
 from cognite.client.utils.useful_types import SequenceNotStr
 from rdflib import RDF, Literal, Namespace, URIRef
 
+from cognite.neat._client import NeatClient
 from cognite.neat._config import GLOBAL_CONFIG
 from cognite.neat._constants import DEFAULT_SPACE_URI, is_readonly_property
 from cognite.neat._issues.errors import ResourceRetrievalError
@@ -33,6 +33,10 @@ class DMSExtractor(BaseExtractor):
             considered as an empty value and skipped.
         str_to_ideal_type: If unpack_json is True, when unpacking JSON objects, if the value is a string, the extractor
             will try to convert it to the ideal type.
+        node_type: The prioritized order of the node type to use. The options are "view" and "type". "view"
+            means the externalId of the view used as type, while type is the node.type.
+        edge_type: The prioritized order of the edge type to use. The options are "view" and "type". "view"
+            means the externalId of the view used as type, while type is the edge.type.
     """
 
     def __init__(
@@ -43,6 +47,8 @@ class DMSExtractor(BaseExtractor):
         unpack_json: bool = False,
         empty_values: Set[str] = DEFAULT_EMPTY_VALUES,
         str_to_ideal_type: bool = False,
+        node_type: tuple[typing.Literal["view", "type"], ...] = ("view",),
+        edge_type: tuple[typing.Literal["view", "type"], ...] = ("view", "type"),
     ) -> None:
         self.total_instances_pair_by_view = total_instances_pair_by_view
         self.limit = limit
@@ -50,11 +56,13 @@ class DMSExtractor(BaseExtractor):
         self.unpack_json = unpack_json
         self.empty_values = empty_values
         self.str_to_ideal_type = str_to_ideal_type
+        self.node_type = node_type
+        self.edge_type = edge_type
 
     @classmethod
     def from_data_model(
         cls,
-        client: CogniteClient,
+        client: NeatClient,
         data_model: DataModelIdentifier,
         limit: int | None = None,
         overwrite_namespace: Namespace | None = None,
@@ -88,7 +96,7 @@ class DMSExtractor(BaseExtractor):
     @classmethod
     def from_views(
         cls,
-        client: CogniteClient,
+        client: NeatClient,
         views: Iterable[dm.View],
         limit: int | None = None,
         overwrite_namespace: Namespace | None = None,
@@ -154,7 +162,10 @@ class DMSExtractor(BaseExtractor):
             else:
                 # If the edge has properties, we create a node for the edge and connect it to the start and end nodes.
                 id_ = self._as_uri_ref(instance)
-                yield id_, RDF.type, self._as_uri_ref(instance.type)
+                type_ = self._create_type(
+                    instance, fallback=self._get_namespace(instance.space).Edge, type_priority=self.edge_type
+                )
+                yield id_, RDF.type, type_
                 yield (
                     id_,
                     self._as_uri_ref(dm.DirectRelationReference(instance.space, "startNode")),
@@ -168,14 +179,9 @@ class DMSExtractor(BaseExtractor):
 
         elif isinstance(instance, dm.Node):
             id_ = self._as_uri_ref(instance)
-            if instance.type:
-                type_ = self._as_uri_ref(cast(dm.DirectRelationReference, instance.type))
-            elif len(instance.properties) == 1:
-                view_id = next(iter(instance.properties.keys()))
-                type_ = self._get_namespace(view_id.space)[urllib.parse.quote(view_id.external_id)]
-            else:
-                type_ = self._get_namespace(instance.space).Node
-
+            type_ = self._create_type(
+                instance, fallback=self._get_namespace(instance.space).Node, type_priority=self.node_type
+            )
             yield id_, RDF.type, type_
         else:
             raise NotImplementedError(f"Unknown instance type {type(instance)}")
@@ -196,6 +202,31 @@ class DMSExtractor(BaseExtractor):
                 self.unpack_json,
             ).extract()
 
+    def _create_type(
+        self, instance: Node | Edge, fallback: URIRef, type_priority: tuple[typing.Literal["view", "type"], ...]
+    ) -> URIRef:
+        method_by_name: dict[str, Callable[[Node | Edge], URIRef | None]] = {
+            "view": self._view_to_rdf_type,
+            "type": self._instance_type_to_rdf,
+        }
+        for method_name in type_priority:
+            type_ = method_by_name[method_name](instance)
+            if type_:
+                return type_
+        else:
+            return fallback
+
+    def _instance_type_to_rdf(self, instance: Node | Edge) -> URIRef | None:
+        if instance.type:
+            return self._as_uri_ref(instance.type)
+        return None
+
+    def _view_to_rdf_type(self, instance: Node | Edge) -> URIRef | None:
+        view_id = next(iter((instance.properties or {}).keys()), None)
+        if view_id:
+            return self._get_namespace(view_id.space)[urllib.parse.quote(view_id.external_id)]
+        return None
+
     def _as_uri_ref(self, instance: Instance | dm.DirectRelationReference) -> URIRef:
         return self._get_namespace(instance.space)[urllib.parse.quote(instance.external_id)]
 
@@ -206,7 +237,7 @@ class DMSExtractor(BaseExtractor):
 
 
 class _ViewInstanceIterator(Iterable[Instance]):
-    def __init__(self, client: CogniteClient, view: dm.View, instance_space: str | SequenceNotStr[str] | None = None):
+    def __init__(self, client: NeatClient, view: dm.View, instance_space: str | SequenceNotStr[str] | None = None):
         self.client = client
         self.view = view
         self.instance_space = instance_space
@@ -215,23 +246,23 @@ class _ViewInstanceIterator(Iterable[Instance]):
     def count(self) -> int:
         node_count = edge_count = 0
         if self.view.used_for in ("node", "all"):
-            node_count = int(
-                self.client.data_modeling.instances.aggregate(
-                    view=self.view.as_id(),
-                    aggregates=dm.aggregations.Count("externalId"),
-                    instance_type="node",
-                    space=self.instance_space,
-                ).value
-            )
+            node_result = self.client.data_modeling.instances.aggregate(
+                view=self.view.as_id(),
+                aggregates=dm.aggregations.Count("externalId"),
+                instance_type="node",
+                space=self.instance_space,
+            ).value
+            if node_result:
+                node_count = int(node_result)
         if self.view.used_for in ("edge", "all"):
-            edge_count = int(
-                self.client.data_modeling.instances.aggregate(
-                    view=self.view.as_id(),
-                    aggregates=dm.aggregations.Count("externalId"),
-                    instance_type="edge",
-                    space=self.instance_space,
-                ).value
-            )
+            edge_result = self.client.data_modeling.instances.aggregate(
+                view=self.view.as_id(),
+                aggregates=dm.aggregations.Count("externalId"),
+                instance_type="edge",
+                space=self.instance_space,
+            ).value
+            if edge_result:
+                edge_count = int(edge_result)
         return node_count + edge_count
 
     def __iter__(self) -> Iterator[Instance]:
@@ -244,28 +275,20 @@ class _ViewInstanceIterator(Iterable[Instance]):
         }
         # All nodes and edges with properties
         if self.view.used_for in ("node", "all"):
-            # Without a sort, the sort is implicitly by the internal id, as cursoring needs a stable sort.
-            # By making the sort be on external_id, Postgres should pick the index
-            # that's on (project_id, space, external_id)
-            # WHERE deleted_at IS NULL. In other words, avoiding soft deleted instances.
-            node_iterable: Iterable[Instance] = self.client.data_modeling.instances(
-                chunk_size=None,
+            node_iterable: Iterable[Instance] = self.client.instances.iterate(
                 instance_type="node",
-                sources=[view_id],
+                source=view_id,
                 space=self.instance_space,
-                sort=InstanceSort(["node", "externalId"]),
             )
             if read_only_properties:
                 node_iterable = self._remove_read_only_properties(node_iterable, read_only_properties, view_id)
             yield from node_iterable
 
         if self.view.used_for in ("edge", "all"):
-            yield from self.client.data_modeling.instances(
-                chunk_size=None,
+            yield from self.client.instances.iterate(
                 instance_type="edge",
-                sources=[view_id],
+                source=view_id,
                 space=self.instance_space,
-                sort=InstanceSort(["edge", "externalId"]),
             )
 
         for prop in self.view.properties.values():
@@ -273,14 +296,12 @@ class _ViewInstanceIterator(Iterable[Instance]):
                 if prop.edge_source:
                     # All edges with properties are extracted from the edge source
                     continue
-                yield from self.client.data_modeling.instances(
-                    chunk_size=None,
+                yield from self.client.instances.iterate(
                     instance_type="edge",
-                    filter=dm.filters.Equals(
+                    filter_=dm.filters.Equals(
                         ["edge", "type"], {"space": prop.type.space, "externalId": prop.type.external_id}
                     ),
                     space=self.instance_space,
-                    sort=InstanceSort(["edge", "externalId"]),
                 )
 
     @staticmethod

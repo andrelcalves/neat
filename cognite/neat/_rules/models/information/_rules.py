@@ -186,26 +186,27 @@ class InformationProperty(SheetRow):
         return value
 
     @model_validator(mode="after")
-    def set_type_for_default(self):
+    def set_type_for_default(self) -> Any:
         if self.type_ == EntityTypes.data_property and self.default:
             default_value = self.default[0] if isinstance(self.default, list) else self.default
 
-            if type(default_value) is not self.value_type.python:
+            if type(default_value) is not self.value_type.python:  # type: ignore
                 try:
                     if isinstance(self.default, list):
                         updated_list = []
                         for value in self.default:
-                            updated_list.append(self.value_type.python(value))
+                            updated_list.append(self.value_type.python(value))  # type: ignore
                         self.default = updated_list
                     else:
-                        self.default = self.value_type.python(self.default)
+                        self.default = self.value_type.python(self.default)  # type: ignore
 
+                # this value_type.python does not seems correct. Need to check this further
                 except Exception:
                     raise PropertyDefinitionError(
                         self.class_,
                         "Class",
                         self.property_,
-                        f"Default value {self.default} is not of type {self.value_type.python}",
+                        f"Default value {self.default} is not of type {self.value_type.python}",  # type: ignore
                     ) from None
         return self
 
@@ -236,18 +237,6 @@ class InformationProperty(SheetRow):
             return EntityTypes.object_property
         else:
             return EntityTypes.undefined
-
-    @property
-    def is_mandatory(self) -> bool:
-        """Returns True if property is mandatory."""
-        return self.min_count not in {0, None}
-
-    @property
-    def is_list(self) -> bool:
-        """Returns True if property contains a list of values."""
-        return self.max_count in {float("inf"), None} or (
-            isinstance(self.max_count, int | float) and self.max_count > 1
-        )
 
 
 class InformationRules(BaseRules):
